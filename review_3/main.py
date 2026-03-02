@@ -56,6 +56,7 @@ CLR_ACCENT_HOV = (90, 210, 150)      # Button hover colour
 CLR_BTN_QUIT   = (180, 60, 60)       # Quit button colour
 CLR_BTN_QUIT_H = (210, 80, 80)       # Quit button hover
 CLR_GREY       = (160, 160, 160)
+CLR_HINT       = (0, 220, 255)       # Cyan for hint highlight
 
 # =========================================================================
 # Game states
@@ -152,6 +153,27 @@ def draw_selection(
             dot_surf, CLR_VALID, (SQUARE // 2, SQUARE // 2), 14,
         )
         win.blit(dot_surf, (dc * SQUARE, dr * SQUARE))
+
+
+def draw_hint(
+    win: pygame.Surface,
+    hint_move: Optional[MovePath],
+) -> None:
+    """Draw a cyan highlight on the hint piece and its destination."""
+    if hint_move is None or len(hint_move) < 2:
+        return
+    # Highlight source piece with cyan ring
+    sr, sc = hint_move[0]
+    cx, cy = _sq_center(sr, sc)
+    pygame.draw.circle(win, CLR_HINT, (cx, cy), SQUARE // 2 - 4, 4)
+    # Highlight destination with cyan dot
+    dr, dc = hint_move[-1]
+    dot = pygame.Surface((SQUARE, SQUARE), pygame.SRCALPHA)
+    pygame.draw.circle(dot, (*CLR_HINT, 160), (SQUARE // 2, SQUARE // 2), 16)
+    win.blit(dot, (dc * SQUARE, dr * SQUARE))
+    # Label
+    hint_label = pygame.font.SysFont('segoeui', 13, bold=True).render('HINT', True, CLR_HINT)
+    win.blit(hint_label, hint_label.get_rect(center=(cx, cy - SQUARE // 2 + 8)))
 
 
 # =====================================================================
@@ -502,6 +524,7 @@ def main() -> None:
     selected: Optional[Position] = None
     valid_destinations: list[Position] = []
     winner: Optional[str] = None
+    hint_move: Optional[MovePath] = None
 
     HUMAN: str = 'r'
     AI: str = 'b'
@@ -534,6 +557,12 @@ def main() -> None:
             draw_board(WIN)
             draw_pieces(WIN, engine.board)
             draw_selection(WIN, selected, valid_destinations)
+            draw_hint(WIN, hint_move)
+            # Show "Press H for Hint" text at bottom
+            if engine.turn == HUMAN:
+                ht = pygame.font.SysFont('segoeui', 13).render(
+                    'Press H for Hint', True, (100, 100, 110))
+                WIN.blit(ht, ht.get_rect(center=(WIDTH // 2, WIDTH - 10)))
             pygame.display.update()
 
             # Check game over
@@ -557,7 +586,14 @@ def main() -> None:
                     pygame.quit()
                     sys.exit()
 
+                # Hint: press H to get AI suggestion for human
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_h:
+                    hint_result = ai_move(engine, HUMAN, depth)
+                    hint_move = hint_result
+                    continue
+
                 if event.type == pygame.MOUSEBUTTONDOWN:
+                    hint_move = None  # Clear hint on click
                     x, y = event.pos
                     row: int = y // SQUARE
                     col: int = x // SQUARE
@@ -605,6 +641,7 @@ def main() -> None:
                         ai_memo.clear()  # Reset transposition table
                         selected = None
                         valid_destinations = []
+                        hint_move = None
                         winner = None
                         state = STATE_INTRO
                     elif btn_quit and btn_quit.collidepoint(event.pos):
