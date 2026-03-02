@@ -169,9 +169,14 @@ def animate_move(win: pygame.Surface, engine: CheckersEngine, move_path: MovePat
 
     start: Position = move_path[0]
     piece: str = engine.board[start]
+    if piece is None:
+        return
     color = CLR_RED if piece.lower() == 'r' else CLR_BLUE
     radius: int = SQUARE // 2 - 8
     is_king: bool = piece.isupper()
+
+    # Track which squares to hide during animation (start + already-jumped intermediates)
+    hidden_positions: set[Position] = {start}
 
     for i in range(len(move_path) - 1):
         sr, sc = move_path[i]
@@ -184,6 +189,11 @@ def animate_move(win: pygame.Surface, engine: CheckersEngine, move_path: MovePat
         dist: int = max(abs(dx), abs(dy))
         steps: int = max(1, dist // ANIMATION_SPEED)
 
+        # If this is a jump, find the captured mid piece and hide it too
+        if abs(er - sr) == 2:
+            mid_pos: Position = ((sr + er) // 2, (sc + ec) // 2)
+            hidden_positions.add(mid_pos)
+
         for step in range(steps + 1):
             t: float = step / steps
             cx: float = sx + dx * t
@@ -195,7 +205,18 @@ def animate_move(win: pygame.Surface, engine: CheckersEngine, move_path: MovePat
                     sys.exit()
 
             draw_board(win)
-            draw_pieces(win, engine.board, skip_pos=move_path[0])
+            # Skip all hidden positions (start, captured midpoints)
+            for (pr, pc), p in engine.board.items():
+                if p is None or (pr, pc) in hidden_positions:
+                    continue
+                p_color = CLR_RED if p.lower() == 'r' else CLR_BLUE
+                pcx, pcy = _sq_center(pr, pc)
+                pygame.draw.circle(win, (40, 40, 40), (pcx + 2, pcy + 3), radius)
+                pygame.draw.circle(win, p_color, (pcx, pcy), radius)
+                pygame.draw.circle(win, CLR_WHITE, (pcx, pcy), radius, 2)
+                if p.isupper():
+                    cr = FONT_CROWN.render("K", True, CLR_GOLD)
+                    win.blit(cr, cr.get_rect(center=(pcx, pcy)))
 
             # Draw animated piece at interpolated position
             pygame.draw.circle(win, (40, 40, 40), (int(cx) + 2, int(cy) + 3), radius)
@@ -248,60 +269,187 @@ def _draw_button(
 # Screens
 # =====================================================================
 
-def draw_intro_screen(win: pygame.Surface, mouse_pos: tuple[int, int]) -> pygame.Rect:
-    """Render the intro/instructions screen and return the Start button rect."""
-    win.fill(CLR_BG)
+def _draw_mini_board(win: pygame.Surface, x: int, y: int, size: int) -> None:
+    """Draw a decorative 4×4 mini checkerboard with pieces at (x, y)."""
+    cell = size // 4
+    for r in range(4):
+        for c in range(4):
+            is_dark = (r + c) % 2 == 1
+            clr = CLR_DARK_SQ if is_dark else CLR_LIGHT_SQ
+            pygame.draw.rect(win, clr, (x + c * cell, y + r * cell, cell, cell))
 
-    # ── Title ──
-    title = FONT_TITLE.render("♛  CHECKERS  ♛", True, CLR_GOLD)
-    win.blit(title, title.get_rect(center=(WIDTH // 2, 55)))
-
-    subtitle = FONT_SMALL.render(
-        "Backtracking  +  Dynamic Programming  +  Alpha-Beta", True, CLR_GREY
-    )
-    win.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, 95)))
-
-    # ── Separator line ──
-    pygame.draw.line(win, CLR_GREY, (40, 120), (WIDTH - 40, 120), 1)
-
-    # ── Instructions ──
-    y: int = 140
-    instructions: list[tuple[str, list[str]]] = [
-        ("HOW TO PLAY", [
-            "You are RED.  The AI plays BLUE.",
-            "Click a piece to select it (yellow highlight).",
-            "Click a highlighted square to move.",
-        ]),
-        ("MOVEMENT RULES", [
-            "Men move diagonally forward by one square.",
-            "Kings (marked K) move diagonally in any direction.",
-            "A man reaching the opposite back row becomes a King.",
-        ]),
-        ("CAPTURE RULES", [
-            "Jump over an opponent's piece diagonally to capture it.",
-            "Captures are MANDATORY — if you can capture, you must.",
-            "Multi-jumps: if another capture is available after a",
-            "jump, the piece must keep jumping (chain capture).",
-        ]),
-        ("WINNING", [
-            "Capture all opponent pieces, or leave them with no",
-            "legal moves.  The AI uses Alpha-Beta Pruning at depth 6.",
-        ]),
+    piece_r = cell // 2 - 3
+    pieces = [
+        (0, 1, CLR_BLUE), (0, 3, CLR_BLUE),
+        (1, 0, CLR_BLUE), (1, 2, CLR_BLUE),
+        (2, 1, CLR_RED),  (2, 3, CLR_RED),
+        (3, 0, CLR_RED),  (3, 2, CLR_RED),
     ]
+    for pr, pc, clr in pieces:
+        cx = x + pc * cell + cell // 2
+        cy = y + pr * cell + cell // 2
+        pygame.draw.circle(win, (20, 20, 20), (cx + 1, cy + 2), piece_r)
+        pygame.draw.circle(win, clr, (cx, cy), piece_r)
+        pygame.draw.circle(win, CLR_WHITE, (cx, cy), piece_r, 1)
+    pygame.draw.rect(win, CLR_GOLD, (x - 1, y - 1, size + 2, size + 2), 2, border_radius=2)
 
-    for heading, lines in instructions:
-        heading_surf = FONT_HEADING.render(heading, True, CLR_ACCENT)
-        win.blit(heading_surf, (40, y))
-        y += 30
-        for line in lines:
-            line_surf = FONT_BODY.render(line, True, CLR_WHITE)
-            win.blit(line_surf, (55, y))
-            y += 22
-        y += 10
 
-    # ── Start button ──
-    btn_rect = pygame.Rect(WIDTH // 2 - 110, y + 10, 220, 50)
-    _draw_button(win, btn_rect, "▶  START GAME", CLR_ACCENT, CLR_ACCENT_HOV, mouse_pos)
+def _draw_rule_row(
+    win: pygame.Surface, x: int, y: int, w: int,
+    icon_color: tuple, heading: str, heading_clr: tuple,
+    lines: list[str], body_font: pygame.font.Font,
+    heading_font: pygame.font.Font,
+) -> int:
+    """Draw a compact rule row with a colored dot icon. Returns new y."""
+    # Background strip
+    strip = pygame.Surface((w, 14 + len(lines) * 15 + 8), pygame.SRCALPHA)
+    strip.fill((255, 255, 255, 12))
+    win.blit(strip, (x, y))
+    pygame.draw.rect(win, icon_color, (x, y, 3, strip.get_height()))
+
+    # Colored dot icon
+    pygame.draw.circle(win, icon_color, (x + 16, y + 11), 5)
+
+    # Heading
+    h_surf = heading_font.render(heading, True, heading_clr)
+    win.blit(h_surf, (x + 28, y + 3))
+
+    # Body lines
+    for i, line in enumerate(lines):
+        s = body_font.render(line, True, (200, 200, 210))
+        win.blit(s, (x + 16, y + 20 + i * 15))
+
+    return y + strip.get_height() + 6
+
+
+def draw_intro_screen(win: pygame.Surface, mouse_pos: tuple[int, int]) -> pygame.Rect:
+    """Render a polished intro screen that fits cleanly in 600×600."""
+    win.fill((18, 20, 26))
+
+    # ── Top gradient glow ──
+    for i in range(80):
+        a = max(0, 50 - i)
+        gs = pygame.Surface((WIDTH, 1), pygame.SRCALPHA)
+        gs.fill((255, 200, 50, a))
+        win.blit(gs, (0, i))
+
+    # ── Centred header area ──
+    # Mini board
+    board_size = 80
+    bx = WIDTH // 2 - 170
+    _draw_mini_board(win, bx, 20, board_size)
+
+    # Title
+    title_font = pygame.font.SysFont("segoeui", 46, bold=True)
+    title = title_font.render("CHECKERS", True, CLR_GOLD)
+    win.blit(title, title.get_rect(midleft=(bx + board_size + 20, 42)))
+
+    # Subtitle — algorithm pills
+    pill_font = pygame.font.SysFont("segoeui", 11, bold=True)
+    pills = [
+        ("Backtracking", (180, 130, 255)),
+        ("Dynamic Programming", (100, 200, 160)),
+        ("Alpha-Beta", (255, 180, 80)),
+    ]
+    px = bx + board_size + 22
+    for label, clr in pills:
+        ps = pill_font.render(label, True, clr)
+        pw = ps.get_width() + 12
+        pill_bg = pygame.Surface((pw, 18), pygame.SRCALPHA)
+        pygame.draw.rect(pill_bg, (*clr, 30), (0, 0, pw, 18), border_radius=9)
+        pygame.draw.rect(pill_bg, (*clr, 90), (0, 0, pw, 18), 1, border_radius=9)
+        win.blit(pill_bg, (px, 72))
+        win.blit(ps, (px + 6, 73))
+        px += pw + 6
+
+    # ── Divider ──
+    pygame.draw.line(win, (60, 60, 70), (30, 108), (WIDTH - 30, 108), 1)
+
+    # ── Player badges ──
+    y = 116
+    # Red
+    pygame.draw.circle(win, CLR_RED, (60, y + 9), 8)
+    pygame.draw.circle(win, CLR_WHITE, (60, y + 9), 8, 1)
+    p_font = pygame.font.SysFont("segoeui", 16, bold=True)
+    win.blit(p_font.render("You play RED", True, (240, 140, 140)), (75, y + 1))
+
+    # Blue
+    pygame.draw.circle(win, CLR_BLUE, (WIDTH // 2 + 40, y + 9), 8)
+    pygame.draw.circle(win, CLR_WHITE, (WIDTH // 2 + 40, y + 9), 8, 1)
+    win.blit(p_font.render("AI plays BLUE (Depth 6)", True, (140, 180, 240)),
+             (WIDTH // 2 + 55, y + 1))
+
+    # ── Rule sections ──
+    heading_font = pygame.font.SysFont("segoeui", 14, bold=True)
+    body_font = pygame.font.SysFont("segoeui", 13)
+    rx = 30
+    rw = WIDTH - 60
+    y = 146
+
+    y = _draw_rule_row(win, rx, y, rw, CLR_ACCENT,
+        "HOW TO PLAY", CLR_ACCENT, [
+            "Click a piece to select it (yellow highlight).",
+            "Valid moves shown as dots — click one to move.",
+            "Capture all opponent pieces or block their moves to win!",
+        ], body_font, heading_font)
+
+    y = _draw_rule_row(win, rx, y, rw, CLR_GOLD,
+        "MOVEMENT", CLR_GOLD, [
+            "Men move diagonally forward by one square.",
+            "Kings (K) move diagonally in all four directions.",
+            "Reach the back row to promote a man to King.",
+        ], body_font, heading_font)
+
+    y = _draw_rule_row(win, rx, y, rw, (255, 90, 90),
+        "CAPTURES (MANDATORY)", (255, 120, 120), [
+            "Jump over an opponent diagonally to capture them.",
+            "If a capture exists, you MUST take it.",
+            "Chain jumps: keep capturing if more are available.",
+        ], body_font, heading_font)
+
+    y = _draw_rule_row(win, rx, y, rw, CLR_BLUE,
+        "AI ENGINE", (120, 170, 240), [
+            "Alpha-Beta Pruning + DP memoization at depth 6.",
+            "Searches thousands of positions per move.",
+        ], body_font, heading_font)
+
+    # ── Decorative vs divider ──
+    vy = y + 2
+    pygame.draw.line(win, (50, 50, 60), (80, vy), (WIDTH - 80, vy), 1)
+    vs_font = pygame.font.SysFont("segoeui", 11, bold=True)
+    vs_bg = pygame.Surface((60, 16), pygame.SRCALPHA)
+    vs_bg.fill((18, 20, 26, 255))
+    win.blit(vs_bg, (WIDTH // 2 - 30, vy - 8))
+    # Red vs Blue icons
+    pygame.draw.circle(win, CLR_RED, (WIDTH // 2 - 18, vy), 6)
+    vs_t = vs_font.render("VS", True, (150, 150, 160))
+    win.blit(vs_t, vs_t.get_rect(center=(WIDTH // 2, vy)))
+    pygame.draw.circle(win, CLR_BLUE, (WIDTH // 2 + 18, vy), 6)
+
+    # ── START button ──
+    btn_w, btn_h = 240, 48
+    btn_y = vy + 16
+    btn_rect = pygame.Rect(WIDTH // 2 - btn_w // 2, btn_y, btn_w, btn_h)
+    hovered = btn_rect.collidepoint(mouse_pos)
+
+    if hovered:
+        glow = pygame.Surface((btn_w + 30, btn_h + 30), pygame.SRCALPHA)
+        pygame.draw.rect(glow, (70, 200, 140, 35),
+                         (0, 0, btn_w + 30, btn_h + 30), border_radius=20)
+        win.blit(glow, (btn_rect.x - 15, btn_rect.y - 15))
+
+    fill = CLR_ACCENT_HOV if hovered else CLR_ACCENT
+    pygame.draw.rect(win, fill, btn_rect, border_radius=14)
+    pygame.draw.rect(win, CLR_WHITE, btn_rect, width=2, border_radius=14)
+    btn_font = pygame.font.SysFont("segoeui", 24, bold=True)
+    bl = btn_font.render("START GAME", True, CLR_WHITE)
+    win.blit(bl, bl.get_rect(center=btn_rect.center))
+
+    # ── Footer ──
+    ft_font = pygame.font.SysFont("segoeui", 11)
+    ft = ft_font.render("DAA Review 3  |  Backtracking + DP + Alpha-Beta Pruning",
+                         True, (70, 70, 80))
+    win.blit(ft, ft.get_rect(center=(WIDTH // 2, WIDTH - 10)))
 
     pygame.display.update()
     return btn_rect
@@ -322,7 +470,7 @@ def draw_game_over_screen(
     winner_color = CLR_RED if winner == 'r' else CLR_BLUE
 
     # Winner text
-    title = FONT_BIG.render(f"🏆  {winner_name} Wins!", True, winner_color)
+    title = FONT_BIG.render(f"{winner_name} Wins!", True, winner_color)
     win.blit(title, title.get_rect(center=(WIDTH // 2, WIDTH // 2 - 70)))
 
     msg = FONT_SMALL.render("Great game! What would you like to do?", True, CLR_WHITE)
